@@ -2,17 +2,39 @@ import prisma from '../database/client.js'
 
 const controller = {}     // Objeto vazio
 
+const CAR_FIELDS = [
+  'brand',
+  'model',
+  'color',
+  'year_manufacture',
+  'imported',
+  'plates',
+  'selling_date',
+  'selling_price',
+  'customer_id'
+]
+
+function pickFields(source, fields) {
+  const result = {}
+  for(const field of fields) {
+    if(source?.[field] !== undefined) result[field] = source[field]
+  }
+  return result
+}
+
 controller.create = async function(req, res) {
   try {
 
+    const data = pickFields(req.body, CAR_FIELDS)
+
     // Preenche qual usuário criou o carro com o id do usuário autenticado
-    req.body.created_user_id = req.authUser.id
+    data.created_user_id = req.authUser.id
 
     // Preenche qual usuário modificou por último o carro com o id
     // do usuário autenticado
-    req.body.updated_user_id = req.authUser.id
+    data.updated_user_id = req.authUser.id
 
-    await prisma.car.create({ data: req.body })
+    await prisma.car.create({ data })
 
     // HTTP 201: Created
     res.status(201).end()
@@ -29,7 +51,7 @@ controller.retrieveAll = async function(req, res) {
   try {
 
     const includedRels = req.query.include?.split(',') ?? []
-    
+
     const result = await prisma.car.findMany({
       orderBy: [
         { brand: 'asc' },
@@ -84,9 +106,12 @@ controller.retrieveOne = async function(req, res) {
 controller.update = async function(req, res) {
   try {
 
+    const data = pickFields(req.body, CAR_FIELDS)
+    data.updated_user_id = req.authUser.id
+
     const result = await prisma.car.update({
       where: { id: Number(req.params.id) },
-      data: req.body
+      data
     })
 
     // Encontrou e atualizou ~> HTTP 204: No Content
@@ -95,10 +120,15 @@ controller.update = async function(req, res) {
     else res.status(404).end()
   }
   catch(error) {
-    console.error(error)
+    if(error?.code === 'P2025') {
+      res.status(404).end()
+    }
+    else {
+      console.error(error)
 
-    // HTTP 500: Internal Server Error
-    res.status(500).end()
+      // HTTP 500: Internal Server Error
+      res.status(500).end()
+    }
   }
 }
 

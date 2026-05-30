@@ -4,23 +4,23 @@ dotenv.config() // Carrega as variáveis de ambiente do arquivo .env
 import express, { json, urlencoded } from 'express'
 import cookieParser from 'cookie-parser'
 import logger from 'morgan'
-
-const app = express()
 import cors from 'cors'
 
-// Middleware de verificação do token de autorização
-import auth from './middleware/auth.js'
-app.use(auth)
+const app = express()
 
 app.use(cors({
-    origin: process.env.ALLOWED_ORIGINS.split(','),
-    // credentials: true
+  origin: process.env.ALLOWED_ORIGINS?.split(',') ?? [],
+  credentials: true
 }))
 
 app.use(logger('dev'))
 app.use(json())
 app.use(urlencoded({ extended: false }))
 app.use(cookieParser())
+
+// Middleware de verificação do token de autorização
+import auth from './middleware/auth.js'
+app.use(auth)
 
 /*********** ROTAS DA API **************/
 

@@ -2,33 +2,68 @@ import prisma from '../database/client.js'
 import jwt from 'jsonwebtoken'
 import argon2 from 'argon2'
 
-
 const ARGON2_CONFIG = {
   type: argon2.argon2id,  // variante recomendada do algoritmo
-  memoryCost: 65536,      // 64 KB de memória máxima utilizada
+  memoryCost: 65536,      // 64 MB de memória máxima utilizada
   timeCost: 3,            // número de iterações
   parallelism: 4          // número de threads simultâneas
 }
 
 const controller = {}     // Objeto vazio
 
+function pickFields(source, fields) {
+  const result = {}
+  for(const field of fields) {
+    if(source?.[field] !== undefined) result[field] = source[field]
+  }
+  return result
+}
+
+function getCookieOptions(req, extra = {}) {
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https'
+
+  return {
+    httpOnly: true,
+    secure: isHttps,
+    sameSite: 'lax',
+    path: '/',
+    ...extra
+  }
+}
+
+function getUserPayload(user) {
+  return {
+    id: user.id,
+    fullname: user.fullname,
+    username: user.username,
+    email: user.email,
+    is_admin: user.is_admin
+  }
+}
+
 controller.create = async function (req, res) {
   try {
 
     // Somente usuários administradores podem acessar este recurso
-    // HTTP 403: Forbidden(
+    // HTTP 403: Forbidden
     if (!req?.authUser?.is_admin) return res.status(403).end()
+
+    const data = pickFields(req.body, [
+      'fullname',
+      'username',
+      'email',
+      'password',
+      'is_admin'
+    ])
 
     // Caso exista o campo "password" em req.body, é
     // necessário gerar o hash da senha antes de
     // armazená-la no BD, usando o algoritmo argon2
-    if (req.body.password) {
-      req.body.password = await argon2.hash(req.body.password, ARGON2_CONFIG)
+    if (data.password) {
+      data.password = await argon2.hash(data.password, ARGON2_CONFIG)
     }
 
-
-    await prisma.user.create({ data: req.body })
-
+    await prisma.user.create({ data })
 
     // HTTP 201: Created
     res.status(201).end()
@@ -48,7 +83,6 @@ controller.retrieveAll = async function (req, res) {
     // HTTP 403: Forbidden
     if (!req?.authUser?.is_admin) return res.status(403).end()
 
-    // const result = await prisma.user.findMany()
     const result = await prisma.user.findMany({
       omit: { password: true }
     })
@@ -77,7 +111,6 @@ controller.retrieveOne = async function (req, res) {
       where: { id: Number(req.params.id) }
     })
 
-
     // Encontrou ~> retorna HTTP 200: OK (implícito)
     if (result) res.send(result)
     // Não encontrou ~> retorna HTTP 404: Not Found
@@ -101,19 +134,28 @@ controller.update = async function (req, res) {
       Number(req?.authUser?.id) === Number(req.params.id)))
       return res.status(403).end()
 
+    const data = pickFields(req.body, [
+      'fullname',
+      'username',
+      'email',
+      'password'
+    ])
+
+    if (req?.authUser?.is_admin && req.body?.is_admin !== undefined) {
+      data.is_admin = req.body.is_admin
+    }
+
     // Caso exista o campo "password" em req.body, é
     // necessário gerar o hash da senha antes de
     // armazená-la no BD, usando o algoritmo argon2
-    if (req.body.password) {
-      req.body.password = await argon2.hash(req.body.password, ARGON2_CONFIG)
+    if (data.password) {
+      data.password = await argon2.hash(data.password, ARGON2_CONFIG)
     }
-
 
     const result = await prisma.user.update({
       where: { id: Number(req.params.id) },
-      data: req.body
+      data
     })
-
 
     // Encontrou e atualizou ~> HTTP 204: No Content
     if (result) res.status(204).end()
@@ -122,10 +164,15 @@ controller.update = async function (req, res) {
   }
 
   catch (error) {
-    console.error(error)
+    if (error?.code === 'P2025') {
+      res.status(404).end()
+    }
+    else {
+      console.error(error)
 
-    // HTTP 500: Internal Server Error
-    res.status(500).end()
+      // HTTP 500: Internal Server Error
+      res.status(500).end()
+    }
   }
 }
 
@@ -161,7 +208,6 @@ controller.delete = async function (req, res) {
 controller.login = async function (req, res) {
   try {
 
-
     // Busca o usuário no BD usando o valor dos campos
     // "username" OU "email"
     const user = await prisma.user.findFirst({
@@ -173,52 +219,39 @@ controller.login = async function (req, res) {
       }
     })
 
-
     // Se o usuário não for encontrado, retorna
     // HTTP 401: Unauthorized
     if (!user) return res.status(401).end()
 
+    let passwordIsValid = false
 
-    // Usuário encontrado, vamos conferir a senha
-    // let passwordIsValid
-    // if(req.body?.username === 'admin' && req.body?.password === 'admin123') passwordIsValid = true
-    // else passwordIsValid = user.password === req.body?.password
-
-
-    let passwordIsValid
-    if (req.body?.username === 'admin' && req.body?.password === 'admin123') passwordIsValid = true
-    else passwordIsValid = await argon2.verify(user.password, req.body?.password)
+    try {
+      passwordIsValid = await argon2.verify(user.password, req.body?.password ?? '')
+    }
+    catch {
+      passwordIsValid = false
+    }
 
     // Se a senha estiver errada, retorna
     // HTTP 401: Unauthorized
     if (!passwordIsValid) return res.status(401).end()
 
-    // Eliminamos o campo "password" dos dados do usuário antes de incluí-lo
-    // no payload do token JWT
-    if (user.password) delete user.password
+    const authUser = getUserPayload(user)
 
     // Usuário e senha OK, passamos ao procedimento de gerar o token
     const token = jwt.sign(
-      user,                       // Dados do usuário
-      process.env.TOKEN_SECRET,   // Senha para criptografar o token
-      { expiresIn: '24h' }        // Prazo de validade do token
+      authUser,                    // Dados do usuário
+      process.env.TOKEN_SECRET,    // Senha para criptografar o token
+      { expiresIn: '24h' }         // Prazo de validade do token
     )
 
-
     // Formamos o cookie para enviar ao front-end
-    res.cookie(process.env.AUTH_COOKIE_NAME, token, {
-      httpOnly: true, // O cookie ficará inacessível para o JS no front-end
-      secure: true,   // O cookie será criptografado em conexões https
-      sameSite: 'lax',
-      // sameSite: 'None',
-      path: '/',
-      maxAge: 24 * 60 * 60 * 100  // 24h
-    })
+    res.cookie(process.env.AUTH_COOKIE_NAME, token, getCookieOptions(req, {
+      maxAge: 24 * 60 * 60 * 1000  // 24h
+    }))
 
-
-    // Retorna o token e o usuário autenticado com
-    // HTTP 200: OK (implícito)
-    res.send({ user })
+    // Retorna o usuário autenticado com HTTP 200: OK (implícito)
+    res.send({ user: authUser })
 
   }
   catch (error) {
@@ -237,14 +270,9 @@ controller.me = function (req, res) {
 
 controller.logout = function (req, res) {
   // Apaga no front-end o cookie que armazena o token de autorização
-  res.clearCookie(process.env.AUTH_COOKIE_NAME, {
-    path: '/',
-    secure: true,
-    sameSite: 'None'
-  })
+  res.clearCookie(process.env.AUTH_COOKIE_NAME, getCookieOptions(req))
   // HTTP 204: No Content
   res.status(204).end()
 }
-
 
 export default controller

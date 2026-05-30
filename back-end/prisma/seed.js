@@ -1,7 +1,15 @@
 import { faker } from '@faker-js/faker/locale/pt_BR'
 import { PrismaClient } from '@prisma/client'
+import argon2 from 'argon2'
 
 const prisma = new PrismaClient();
+
+const ARGON2_CONFIG = {
+  type: argon2.argon2id,
+  memoryCost: 65536,
+  timeCost: 3,
+  parallelism: 4
+}
 
 const colors = [
   'AMARELO',
@@ -30,7 +38,7 @@ async function main() {
       fullname: 'Administrador do Sistema',
       username: 'admin',
       email: 'admin@vulcom.com.br',
-      password: 'Vulcom@DSM',
+      password: await argon2.hash('Vulcom@DSM', ARGON2_CONFIG),
       is_admin: true
     }
   })
@@ -42,7 +50,7 @@ async function main() {
         fullname: faker.person.fullName(),
         username: faker.internet.username(),
         email: faker.internet.email(),
-        password: 'senha123',
+        password: await argon2.hash('senha123', ARGON2_CONFIG),
         is_admin: i === 0,
       },
     });
